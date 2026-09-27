@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>show-ports</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#fff; --ink:#14171c; --muted:#697386; --line:#e3e6ec;
+    --accent:#2f6feb; --ok:#1a7f47; --warn:#9a6400; --bad:#c0392b;
+    --chip:#eef1f6; --code:#f2f4f8;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#0f1115; --panel:#171a21; --ink:#e6e9ef; --muted:#98a1b3; --line:#262b35;
+      --accent:#5b93f7; --ok:#4cc38a; --warn:#e0a53d; --bad:#f0796a;
+      --chip:#222732; --code:#11141a;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  header{position:sticky;top:0;z-index:9;background:var(--panel);
+    border-bottom:1px solid var(--line);padding:14px 20px;
+    display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+  h1{font-size:16px;margin:0;letter-spacing:-.01em}
+  h1 span{color:var(--muted);font-weight:400}
+  .counts{color:var(--muted);font-size:13px}
+  .counts b{color:var(--ink)}
+  .spacer{flex:1}
+  button{font:inherit;padding:6px 12px;border-radius:7px;border:1px solid var(--line);
+    background:var(--panel);color:var(--ink);cursor:pointer}
+  button:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+  select{font:inherit;padding:5px 8px;border-radius:7px;border:1px solid var(--line);
+    background:var(--panel);color:var(--ink)}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  button.danger:hover:not(:disabled){border-color:var(--bad);color:var(--bad)}
+  label.toggle{display:flex;gap:6px;align-items:center;color:var(--muted);cursor:pointer}
+  main{padding:20px;max-width:1180px;margin:0 auto}
+  h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);
+    margin:28px 0 10px}
+  h2:first-child{margin-top:0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+    padding:14px 16px;margin-bottom:10px}
+  .card.dead{opacity:.75;border-style:dashed}
+  .row{display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap}
+  .port{font:600 15px/1 ui-monospace,SFMono-Regular,Menlo,monospace;
+    background:var(--chip);border-radius:6px;padding:8px 10px;min-width:64px;
+    text-align:center;white-space:nowrap}
+  .id{flex:1;min-width:240px}
+  .name{font-weight:600}
+  .name a{color:var(--accent);text-decoration:none}
+  .name a:hover{text-decoration:underline}
+  .meta{color:var(--muted);font-size:12.5px;margin-top:2px;
+    display:flex;gap:10px;flex-wrap:wrap}
+  .meta code{background:none;padding:0}
+  .actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  pre.cmd{background:var(--code);border:1px solid var(--line);border-radius:7px;
+    padding:9px 11px;margin:10px 0 0;overflow-x:auto;white-space:pre;
+    font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+  .note{margin-top:9px;font-size:12.5px;padding:7px 10px;border-radius:6px;
+    border-left:3px solid var(--warn);background:var(--chip);color:var(--muted)}
+  .note.err{border-left-color:var(--bad);color:var(--bad)}
+  .note.ok{border-left-color:var(--ok);color:var(--ok)}
+  .tag{font-size:11px;padding:2px 7px;border-radius:20px;background:var(--chip);
+    color:var(--muted);white-space:nowrap}
+  .tag.ok{color:var(--ok)} .tag.warn{color:var(--warn)} .tag.bad{color:var(--bad)}
+  .empty{color:var(--muted);padding:24px;text-align:center}
+  pre.log{background:var(--code);border:1px solid var(--line);border-radius:7px;
+    padding:10px;max-height:340px;overflow:auto;font:12px/1.5 ui-monospace,Menlo,monospace;
+    margin-top:10px;white-space:pre-wrap}
+  .busy{animation:pulse 1s ease-in-out infinite}
+  @keyframes pulse{50%{opacity:.45}}
+</style>
+</head>
+<body>
+<header>
+  <h1>show-ports <span>v{{ version }}</span></h1>
+  <div class="counts" id="counts">scanning…</div>
+  <div class="spacer"></div>
+  <label class="toggle"><input type="checkbox" id="showAll"> all listening ports</label>
+  <label class="toggle">sort
+    <select id="sortBy">
+      <option value="web">web apps first</option>
+      <option value="port">port</option>
+      <option value="name">name</option>
+      <option value="uptime">uptime</option>
+      <option value="memory">memory</option>
+    </select>
+  </label>
+  <label class="toggle"><input type="checkbox" id="auto" checked> auto-refresh</label>
+  <button id="refresh">Refresh</button>
+</header>
+<main>
+  <div id="running"></div>
+  <div id="stoppedWrap" hidden>
+    <h2>Stopped — saved launch specs</h2>
+    <div id="stopped"></div>
+  </div>
+</main>
+<script>
+const TOKEN = {{ token|tojson }};
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let timer = null, busy = false;
+
+async function api(path, method = "GET", body) {
+  const res = await fetch(path, {
+    method,
+    headers: {"Content-Type": "application/json", "X-ShowPorts-Token": TOKEN},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({error: `HTTP ${res.status}`}));
+  if (!res.ok && !data.error) data.error = `HTTP ${res.status}`;
+  return data;
+}
+
+const SORTS = {
+  web:    (a, b) => (b.is_webapp - a.is_webapp) || (a.port - b.port),
+  port:   (a, b) => a.port - b.port,
+  name:   (a, b) => a.label.localeCompare(b.label) || (a.port - b.port),
+  uptime: (a, b) => (a.create_time || Infinity) - (b.create_time || Infinity),
+  memory: (a, b) => (b.memory_mb || 0) - (a.memory_mb || 0),
+};
+
+function statusTag(s) {
+  const bits = [];
+  bits.push(s.is_webapp
+    ? '<span class="tag ok">web</span>'
+    : `<span class="tag">${esc(s.protocol_name)}</span>`);
+  if (s.probe && s.probe.status) {
+    const cls = s.probe.status < 400 ? "ok" : s.probe.status < 500 ? "warn" : "bad";
+    bits.push(`<span class="tag ${cls}">HTTP ${s.probe.status}</span>`);
+  }
+  if (!s.visible) bits.push('<span class="tag warn">owner hidden</span>');
+  else if (!s.controllable) bits.push('<span class="tag warn">other user</span>');
+  if (s.supervised_by) {
+    const short = s.supervised_by.replace(/^systemd unit /, "").replace(/\.service$/, "");
+    bits.push(`<span class="tag warn">${esc(short)}</span>`);
+  }
+  if (s.registry_id) bits.push('<span class="tag ok">spec saved</span>');
+  return bits.join(" ");
+}
+
+function serviceCard(s) {
+  const link = s.url ? `<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.label)}</a>`
+                     : esc(s.label);
+  const meta = [];
+  if (s.pid) meta.push(`pid ${s.pid}`);
+  if (s.user) meta.push(esc(s.user));
+  if (s.uptime) meta.push(`up ${s.uptime}`);
+  if (s.memory_mb) meta.push(`${s.memory_mb} MB`);
+  if (s.children) meta.push(`${s.children} child${s.children > 1 ? "ren" : ""}`);
+  meta.push(esc(s.addresses.join(", ")));
+  if (s.cwd) meta.push(`<code>${esc(s.cwd)}</code>`);
+
+  const can = s.controllable && s.pid;
+  const acts = [];
+  if (s.url) acts.push(`<button data-act="open" data-url="${esc(s.url)}">Open</button>`);
+  acts.push(`<button data-act="restart" ${can ? "" : "disabled"}>Restart</button>`);
+  acts.push(`<button class="danger" data-act="stop" ${can ? "" : "disabled"}>Stop</button>`);
+  if (can && !s.registry_id) acts.push(`<button data-act="save">Save spec</button>`);
+  if (s.registry_id) acts.push(`<button data-act="logs" data-id="${esc(s.registry_id)}">Logs</button>`);
+
+  let hint = "";
+  if (!s.visible) {
+    hint = `<div class="note">Owned by another user (usually root), so the command and
+      controls are hidden. Re-run show-ports with <code>sudo</code> to manage it.</div>`;
+  } else if (!s.controllable) {
+    hint = `<div class="note">Runs as <b>${esc(s.user)}</b>; you can't signal it from this account.</div>`;
+  } else if (s.supervised_by) {
+    hint = `<div class="note">Managed by <b>${esc(s.supervised_by)}</b>. Stopping it here may be
+      undone by its manager — prefer${s.restart_hint ? `: <code>${esc(s.restart_hint)}</code>` : " its own tooling."}</div>`;
+  }
+
+  return `<div class="card" data-pid="${s.pid || ""}" data-port="${s.port}"
+             data-rid="${esc(s.registry_id || "")}">
+    <div class="row">
+      <div class="port">${s.port}</div>
+      <div class="id">
+        <div class="name">${link} ${statusTag(s)}</div>
+        <div class="meta">${meta.join(" · ")}</div>
+      </div>
+      <div class="actions">${acts.join("")}</div>
+    </div>
+    ${s.command ? `<pre class="cmd">${esc(s.command)}</pre>` : ""}
+    ${hint}
+    <div class="slot"></div>
+  </div>`;
+}
+
+function stoppedCard(e) {
+  return `<div class="card dead" data-rid="${esc(e.id)}" data-port="${e.port}">
+    <div class="row">
+      <div class="port">${e.port}</div>
+      <div class="id">
+        <div class="name">${esc(e.label)} <span class="tag">not running</span></div>
+        <div class="meta"><code>${esc(e.cwd)}</code> · ${e.env_count} env vars saved</div>
+      </div>
+      <div class="actions">
+        <button data-act="start">Start</button>
+        <button data-act="logs" data-id="${esc(e.id)}">Logs</button>
+        <button class="danger" data-act="forget">Forget</button>
+      </div>
+    </div>
+    <pre class="cmd">${esc(e.command)}</pre>
+    <div class="slot"></div>
+  </div>`;
+}
+
+async function load() {
+  if (busy) return;
+  const all = $("showAll").checked ? "?all=1" : "";
+  const data = await api(`/api/services${all}`);
+  if (data.error) { $("counts").textContent = data.error; return; }
+  const c = data.counts;
+  $("counts").innerHTML =
+    `<b>${c.web}</b> web apps · <b>${c.total}</b> listening ports · <b>${c.hidden}</b> hidden owner`;
+  const sorted = data.services.slice().sort(SORTS[$("sortBy").value] || SORTS.web);
+  $("running").innerHTML = sorted.length
+    ? sorted.map(serviceCard).join("")
+    : `<div class="empty">Nothing listening that answers HTTP.</div>`;
+  $("stoppedWrap").hidden = !data.stopped.length;
+  $("stopped").innerHTML = data.stopped.map(stoppedCard).join("");
+}
+
+function slot(card, html, cls = "note") {
+  card.querySelector(".slot").innerHTML = `<div class="${cls}">${html}</div>`;
+}
+
+document.addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("button[data-act]");
+  if (!btn) return;
+  const act = btn.dataset.act;
+  if (act === "open") { window.open(btn.dataset.url, "_blank", "noopener"); return; }
+
+  const card = btn.closest(".card");
+  const pid = Number(card.dataset.pid) || null;
+  const port = Number(card.dataset.port);
+  const rid = card.dataset.rid || null;
+
+  if (act === "logs") {
+    const r = await api(`/api/logs/${encodeURIComponent(btn.dataset.id)}`);
+    card.querySelector(".slot").innerHTML = r.error
+      ? `<div class="note err">${esc(r.error)}</div>`
+      : `<pre class="log">${esc(r.log)}</pre><div class="meta">${esc(r.path)}</div>`;
+    return;
+  }
+
+  const labels = {stop: "Stop", restart: "Restart", start: "Start", save: "Save spec", forget: "Forget"};
+  if ((act === "stop" || act === "restart") &&
+      !confirm(`${labels[act]} the service on port ${port}?`)) return;
+
+  busy = true;
+  const original = btn.textContent;
+  btn.textContent = "…"; btn.classList.add("busy"); btn.disabled = true;
+  try {
+    let r;
+    if (act === "stop")    r = await api("/api/stop", "POST", {pid, port});
+    if (act === "restart") r = await api("/api/restart", "POST", {pid, port, id: rid});
+    if (act === "start")   r = await api("/api/start", "POST", {id: rid});
+    if (act === "save")    r = await api("/api/capture", "POST", {pid, port});
+    if (act === "forget")  r = await api(`/api/registry/${encodeURIComponent(rid)}`, "DELETE");
+
+    if (r.error) {
+      slot(card, esc(r.error), "note err");
+    } else if (r.log_tail || (r.start && r.start.log_tail)) {
+      const s = r.start || r;
+      slot(card, `${esc(s.error || "failed to start")}<pre class="log">${esc(s.log_tail)}</pre>`, "note err");
+    } else {
+      slot(card, `${esc(labels[act])} succeeded.`, "note ok");
+      setTimeout(load, 900);
+    }
+  } finally {
+    busy = false;
+    btn.textContent = original; btn.classList.remove("busy"); btn.disabled = false;
+  }
+});
+
+function reschedule() {
+  clearInterval(timer);
+  if ($("auto").checked) timer = setInterval(load, 6000);
+}
+// Let the view be preset from the URL, so a particular listing is bookmarkable:
+// ?all=1&sort=port
+const params = new URLSearchParams(location.search);
+if (params.get("all") === "1") $("showAll").checked = true;
+if (SORTS[params.get("sort")]) $("sortBy").value = params.get("sort");
+
+$("refresh").onclick = load;
+$("showAll").onchange = load;
+$("sortBy").onchange = load;
+$("auto").onchange = reschedule;
+load(); reschedule();
+</script>
+</body>
+</html>

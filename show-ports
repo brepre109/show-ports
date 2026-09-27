@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Entry point for show-ports. No install step needed.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Only `serve` needs flask; the terminal commands run on psutil alone.
+need="psutil"
+for arg in "$@"; do
+  [ "$arg" = "serve" ] && need="psutil flask"
+done
+
+has_deps() { "$1" -c "import ${need// /, }" >/dev/null 2>&1; }
+
+# PATH's `python3` is not always the one carrying the dependencies (a Homebrew
+# or pyenv shim can shadow the system interpreter), so pick the first candidate
+# that can actually import them.
+PY=""
+for cand in "${SHOW_PORTS_PYTHON:-}" python3 /usr/bin/python3 python; do
+  [ -n "$cand" ] || continue
+  command -v "$cand" >/dev/null 2>&1 || continue
+  if has_deps "$cand"; then PY="$cand"; break; fi
+done
+
+# Under sudo, HOME becomes /root, so the invoking user's pip --user packages
+# disappear even though they are installed. Borrow that site directory rather
+# than making the user install a second copy as root.
+if [ -z "$PY" ] && [ -n "${SUDO_USER:-}" ]; then
+  for cand in "${SHOW_PORTS_PYTHON:-}" python3 /usr/bin/python3; do
+    [ -n "$cand" ] || continue
+    command -v "$cand" >/dev/null 2>&1 || continue
+    ver="$("$cand" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null)" || continue
+    site="$(eval echo "~$SUDO_USER")/.local/lib/python$ver/site-packages"
+    [ -d "$site" ] || continue
+    # Refuse a site dir others can write to: root would be importing code that
+    # another account could have replaced.
+    perms="$(stat -c '%U %a' "$site" 2>/dev/null)" || continue
+    owner="${perms% *}"; mode="${perms#* }"
+    if [ "$owner" != "$SUDO_USER" ] && [ "$owner" != "root" ]; then continue; fi
+    case "$mode" in *[2367]) continue;; esac   # group- or world-writable
+    if PYTHONPATH="$site${PYTHONPATH:+:$PYTHONPATH}" has_deps "$cand"; then
+      export PYTHONPATH="$site${PYTHONPATH:+:$PYTHONPATH}"
+      PY="$cand"
+      echo "show-ports: using $SUDO_USER's packages from $site" >&2
+      break
+    fi
+  done
+fi
+
+if [ -z "$PY" ]; then
+  {
+    echo "show-ports: no Python interpreter can import: $need"
+    echo
+    echo "Install them for the account you are running as:"
+    echo "    python3 -m pip install --user $need"
+    [ -n "${SUDO_USER:-}" ] && echo "    (as root:  sudo python3 -m pip install $need)"
+    echo "Or point SHOW_PORTS_PYTHON at an interpreter that already has them."
+  } >&2
+  exit 1
+fi
+
+exec "$PY" -c 'import sys; sys.path.insert(0, sys.argv[1]); from showports.cli import main; sys.exit(main(sys.argv[2:]))' "$here" "$@"
